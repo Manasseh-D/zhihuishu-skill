@@ -1,0 +1,13 @@
+# 登录态文件（含敏感 cookie）
+storage-state.json
+
+# Playwright MCP 运行时文件
+.playwright-mcp/
+
+# 运行时日志/快照
+console-log.txt
+learnPage-snapshot.md
+
+# 系统文件
+.DS_Store
+Thumbs.db
