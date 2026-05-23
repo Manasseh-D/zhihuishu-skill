@@ -29,8 +29,8 @@ Claude Code 按 token 消耗计费，参考费用：
 
 推荐使用方式：
 
-1. **新建一个文件夹**，将 `zhihuishu-skill.md` 与 `题库.md` 放入其中
-2. 以 **bypass permissions** 模式打开 Claude Code：在终端中输入
+1. **新建一个文件夹**，按照上方[安装](#安装)方式将仓库文件下载到该文件夹中
+2. 在该文件夹中打开终端，以 **bypass permissions** 模式启动 Claude Code：
 
    ```bash
    claude --dangerously-skip-permissions
@@ -55,21 +55,21 @@ Claude Code 会自动克隆仓库并完成配置。
 
 ### 方式二：Git 克隆（推荐）
 
+1. 新建一个空文件夹，在其中打开终端
+
 **Windows（PowerShell）：**
 
 ```powershell
-git clone https://github.com/Manasseh-D/zhihuishu-skill.git
-cd zhihuishu-skill
-claude --dangerously-skip-permissions
+git clone https://github.com/Manasseh-D/zhihuishu-skill.git .
 ```
 
 **macOS / Linux：**
 
 ```bash
-git clone https://github.com/Manasseh-D/zhihuishu-skill.git
-cd zhihuishu-skill
-claude --dangerously-skip-permissions
+git clone https://github.com/Manasseh-D/zhihuishu-skill.git .
 ```
+
+> 末尾的 `.` 表示直接克隆到当前目录，不会额外创建子文件夹。
 
 ### 方式三：手动下载
 
