@@ -76,8 +76,6 @@ git clone https://github.com/Manasseh-D/zhihuishu-skill.git .
 git clone https://github.com/Manasseh-D/zhihuishu-skill.git .
 ```
 
-> 末尾的 `.` 表示直接克隆到当前目录，不会额外创建子文件夹。
-
 ### 方式三：手动下载
 
 1. 点击仓库页面 **Code → Download ZIP**，解压到本地文件夹
