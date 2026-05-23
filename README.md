@@ -43,13 +43,38 @@ Claude Code 按 token 消耗计费，参考费用：
 
 ## 安装
 
-### 手动下载
+### 方式一：一行命令
 
-将本仓库中的 `zhihuishu-skill.md` 和 `题库.md` 下载到本地新建文件夹中即可。
+打开你的 Claude Code，告诉它：
 
-### 其他安装方式
+```
+帮我安装这个 skill：https://github.com/Manasseh-D/zhihuishu-skill
+```
 
-> *通过 winget 等方式的具体步骤待补充。*
+Claude Code 会自动克隆仓库并完成配置。
+
+### 方式二：Git 克隆（推荐）
+
+**Windows（PowerShell）：**
+
+```powershell
+git clone https://github.com/Manasseh-D/zhihuishu-skill.git
+cd zhihuishu-skill
+claude --dangerously-skip-permissions
+```
+
+**macOS / Linux：**
+
+```bash
+git clone https://github.com/Manasseh-D/zhihuishu-skill.git
+cd zhihuishu-skill
+claude --dangerously-skip-permissions
+```
+
+### 方式三：手动下载
+
+1. 点击仓库页面 **Code → Download ZIP**，解压到本地文件夹
+2. 在该文件夹中打开终端，运行 `claude --dangerously-skip-permissions`
 
 ## 注意事项
 
@@ -73,5 +98,6 @@ Claude Code 按 token 消耗计费，参考费用：
 2. 智慧树中非 AI 课程的其他章末测试也可以类似方式实现自动完成，有需求者可自行开发
 3. 若有愿意分享已收集题库者，可关注微信公众号 **Manasseh-D**，私信后台
 4. 笔者非专业项目开发者，skill 尚有诸多不足之处，只希望能帮助大家节省更多精力，专注医学学习
+5. 推荐另一个网课助手：[OCS 网课助手](https://docs.ocsjs.com)，支持超星学习通、智慧树等多平台的自动化刷课
 
 祝大家绩点高高！
