@@ -341,7 +341,7 @@ for (let d = 0; d < 5; d++) {
 每个 paperId 只能提交一次，提交后必须从 learnPage → 去提升 重新获取。若 paperId 复用无法获得新试卷，从课程主页重新进入或等待后重试。检查 masteryHistory 历史记录数确认。
 
 ### Q3: label:has-text 选择器超时 / 导航项被遮罩
-用 `page.evaluate` + `textContent.includes()` 遍历点击，可绕过遮罩。
+用 `page.evaluate` + `textContent.includes()` 遍历点击，可不依赖可见性检测直接定位元素。
 
 ### Q4: 题数与随机抽题
 三个随机维度：题目顺序随机变化 + 每次从 7~10 题中抽 3~6 题 + 题数因知识点而异（可通过答题卡 treeitem 数判断）。对策：按题目内容关键词匹配，不可依赖题号；完整题库需 3~5 轮覆盖。通过结果页「测试题推荐」发现未收录题。
