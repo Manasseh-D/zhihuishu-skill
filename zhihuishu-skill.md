@@ -147,6 +147,10 @@ playwright-cli list
 
 ### 4.2 操作步骤
 
+采用 **两阶段** 策略：Claude 负责首轮探索入库，脚本负责重复刷题。
+
+**Phase 1 — Claude 首轮探索（第 1 轮）**：
+
 ```
 1. 进入课程主页 → 左侧选择「知识模块」章节
 2. 点击目标「知识点」进入学习页
@@ -155,18 +159,41 @@ playwright-cli list
 5. 逐题作答（优先在 题库.md 中搜索答案，命中则直接使用）
 6. 点击「提交作业」
 7. 检查结果页掌握度：
-   - ≥ 97% → 继续下一轮（直至100%）
+   - ≥ 97% → 第 1 轮完成，进入 Phase 2
    - < 97% → 未全对！进入「查看作答记录与解析」
-              → 逐题查看：每道题都记录到 题库.md
-                 - 做对的题：确认答案正确，照常记录
-                 - 做错的题：记录系统反馈的【正确答案】，而非自己选的错误答案
-              → 重复步骤3-6（**不停止，自动继续**）
+              → 逐题查看：每道题（不论对错）以系统正确答案为准，记录到 题库.md
+              → 重复步骤3-6 直至 ≥ 97%（**不停止，不询问**）
+```
+
+**Phase 2 — 脚本自动重复（第 2-3 轮）** ⭐ 强制绑定：
+
+> ⛔ **Phase 1 完成后必须立即运行 `auto-brush.js`**。不得手动替代脚本完成剩余轮次。
+
+```bash
+# 强制使用 --point-id 模式（跳过 DOM 搜索，最可靠）
+node auto-brush.js --point-id <pointId> --rounds 2
+```
+
+脚本自动完成：导航 → 读题 → 读题区纯文本 → 关键词匹配题库 → 点击 → 提交 → learnPage 掌握度复核 → 循环。
+
+**脚本运行后 CC 的处理流程**：
+
+```
+脚本完成后:
+  1. 检查脚本最终输出: ✅ 代表 ≥100% 完成, ❌ 代表未达标
+  2. 若输出 unmatched.log → Read 该文件 → 补充入库 → 重新运行脚本
+  3. 若脚本全未匹配退出 → CC 返回 Phase 1 补充该知识点题库 → 重新运行脚本
+  4. 无论如何，每个知识点至少运行 3 次脚本（即使前2次未达标）
+  → 3 次后仍不达标才标记为需人工复查
 ```
 
 > **核心原则**：
-> - 答题前先查 `题库.md`，有答案直接用
+> - 第 1 轮 Claude AI 判断 + 入库（提取精确关键词），第 2-3 轮 `--point-id` 脚本机械化重复
+> - **关键词必须从 `readCurrentQuestion()` 返回的实际文本中逐字复制**
+> - 题库 ≥ 5 字关键词确保脚本匹配高置信度（见 4.4）
 > - 掌握度 < 97% 时，每道题（无论对错）都入库
-> - 题库逐步覆盖全部考题，后续正确率越来越高
+> - **每完成一个知识点的 Phase 1 就立即跑脚本**，不要积攒多个后再跑
+> - 脚本 `--point-id` 模式优先于 `--point` 模式（避免 DOM 搜索失败）
 
 ### 4.3 关键提示
 
@@ -181,10 +208,12 @@ playwright-cli list
 
 ```
 对于每道题：
-  1. 从题目文本中取最独特的 4~7 字片段 → Grep "关键词" 题库.md -A 3
+  1. 从题目文本中取最独特的 ≥5 字片段 → Grep "关键词" 题库.md -A 3
   2. 命中 → 返回该条目的类型和正确选项，直接使用
   3. 无结果 → 换一个片段重试；仍无则为新题，AI 自行判断
 ```
+
+> **关键词长度要求 ≥ 5 字**：脚本 `auto-brush.js` 只对 ≥5 字关键词给予 HIGH 置信度，4 字降为 MEDIUM，≤3 字降为 LOW。为保障脚本匹配可靠性，Claude 入库时必须选择 ≥5 字的独特片段。
 
 > **为什么用 Grep 而非 Read**：题库按条目独立存储，`Grep -A 3` 精准返回匹配条目（~50 tokens），避免每次加载全文（~4,000 tokens），节省 95% 题库 I/O。
 
@@ -197,7 +226,7 @@ playwright-cli list
 **⚠️ 错题记录铁律**：必须记录**系统反馈的正确答案**（绿色/勾号标示），而非自己选的错误答案。
 
 **注意事项**：
-- 关键词用 4~7 字短片段（参见 Q10），既保证 DOM 匹配也保证 Grep 匹配
+- 关键词用 ≥5 字独特片段，既保证 DOM 匹配也保证 Grep 匹配和脚本匹配
 - 每次答错都是完善题库的机会
 
 ### 4.5 通用导航技巧
@@ -373,14 +402,27 @@ playwright-cli -s=zhihuishu click "getByText('免疫防御')"
 #### 阶段三：提交与检查
 
 ```bash
-# 点击提交
-playwright-cli -s=zhihuishu click "getByText('提交作业')"
+# 使用 run-code 一键完成提交+弹窗（dialog-accept 无效，见 5.7）
+playwright-cli -s=zhihuishu run-code "async (page) => {
+  await page.getByText('提交作业').click();
+  await page.waitForTimeout(2000);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(1000);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(1000);
+  await page.evaluate(() => {
+    for (const b of document.querySelectorAll('button, .el-button, .comfirm, .ZHIHUISHU_QZMD')) {
+      const t = b.textContent?.trim() || '';
+      if (t === '确定' || t === '交卷' || t === '交卷(s)') {
+        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      }
+    }
+  });
+  await page.waitForTimeout(3000);
+  return page.url();
+}"
 
-# 处理确认对话框链（Vue confirm 非原生 alert）
-playwright-cli -s=zhihuishu dialog-accept    # "确定"
-playwright-cli -s=zhihuishu dialog-accept    # "交卷"
-
-# 等待页面跳转到结果页后检查 URL
+# 验证跳转结果页
 playwright-cli -s=zhihuishu --raw eval "window.location.href"
 ```
 
@@ -598,7 +640,7 @@ playwright-cli -s=zhihuishu --raw eval "
 不能预设"总有一两个错"。案例：B细胞生发中心事件、BCR多样性机制 → 全选 A-E。
 
 ### Q10: 关键词匹配——空格/格式问题
-DOM 中长文本可能因空格差异导致 `includes()` 失败。用 4~7 字短片段匹配，取最独特部分。
+DOM 中长文本可能因空格差异导致 `includes()` 失败。用 ≥5 字短片段匹配，取最独特部分。太短会导致脚本匹装备选方案降级。
 
 ### Q11: 验证选项选中状态
 单选：`li.innerHTML.includes('checkedIcon')`；多选：DOM class `.is-checked` 不等于提交生效，需以实际提交结果为准（见 5.6 主方案）。
@@ -607,7 +649,7 @@ DOM 中长文本可能因空格差异导致 `includes()` 失败。用 4~7 字短
 多选必须至少选一个后"下一题"才生效。连续多次看到同一题目 = 需要先作答。
 
 ### Q13: 单选题短关键词匹配
-用 4~7 字短片段匹配 li，远比长完整文本可靠。先 `--raw eval` 读实际 li 文本确认可用片段，再用片段点击。
+用 ≥5 字短片段匹配 li，远比长完整文本可靠。先 `--raw eval` 读实际 li 文本确认可用片段，再用片段点击。
 
 ### Q14: 题目顺序随机与自适应作答
 同一试卷内题号顺序也可随机变化。每题先 `--raw eval` 读取 body 判断类型和关键词，再匹配答案。
@@ -652,18 +694,18 @@ Element UI 的 `el-message-box` 弹窗不是原生 HTML `<dialog>`，`dialog-acc
 
 ## 七、上下文管理
 
-### Token 消耗估算（CLI 方案）
+### Token 消耗估算（两阶段方案）
 
-| 阶段 | 每知识点每轮估算 |
-|------|-----------------|
-| 导航 + 点击（~10 次 CLI 命令，无快照） | ~1,500 tokens |
-| 读题 + 检索 + 作答 | ~1,800 tokens |
-| 提交 + 检查结果 | ~600 tokens |
-| **单轮合计** | **~3,900 tokens** |
-| 1 个知识点 × 3 轮 | **~12K tokens** |
-| 30 个知识点（全课程） | **~350K tokens** |
+| 阶段 | 方式 | 每知识点估算 |
+|------|------|-------------|
+| 第 1 轮（探索入库） | Claude + CLI | ~4,000 tokens |
+| 第 2-3 轮（重复刷题） | `auto-brush.js` 脚本 | **0 tokens** |
+| **每知识点合计** | | **~4K tokens** |
+| 30 个知识点（全课程） | | **~120K tokens** |
 
-> 30 个知识点全课程 DeepSeek-V4 费用约 **¥5-6**（CLI 方案每知识点约 12K tokens）。
+> 相比每轮都由 Claude 驱动（~12K/知识点），两阶段方案节省 **67% token**。30 知识点全课程 DeepSeek-V4 费用约 **¥2-3**。
+>
+> 脚本 `auto-brush.js` 复用同一份 `storage-state.json` 和 `题库.md`，无需额外配置。
 
 ### Session 管理建议
 
@@ -726,162 +768,23 @@ Element UI 的 `el-message-box` 弹窗不是原生 HTML `<dialog>`，`dialog-acc
 
 ---
 
-## 九、脚本化重复刷题（auto-brush.js）
+## 九、auto-brush.js 速查
 
-### 9.1 概述
-
-`auto-brush.js` 是独立的 Node.js 脚本，直接调用 Playwright API 驱动浏览器完成**第 2-3 轮重复刷题**。与 Claude 驱动的 Playwright CLI（第 1 轮探索+入库）配合使用：
-
-```
-第 1 轮: Claude + Playwright CLI → 逐题作答 + 记录答案到 题库.md → 提交
-第 2 轮: node auto-brush.js → 读题库 → 自动匹配+点击 → 提交
-第 3 轮: node auto-brush.js → 读题库 → 自动匹配+点击 → 提交 → 100%
-```
-
-> **核心价值**：第 2-3 轮重复刷题不消耗 AI token，适合题库已覆盖的知识点快速冲刺 100%。
-
-### 9.2 安装
+独立刷题脚本，零 token 消耗。用法详见 `node auto-brush.js --help`。
 
 ```bash
-npm install playwright
+# 常用命令（推荐使用 --point-id 模式）
+node auto-brush.js --point-id 157455         # ⭐ 推荐: 按 pointId 刷（跳过DOM搜索，最可靠）
+node auto-brush.js --point "知识点名"        # 按名称搜索刷（需 DOM 匹配）
+node auto-brush.js --point-id 157455 --rounds 2  # 指定轮数
+node auto-brush.js --all                     # 批量处理 progress.md 中所有未完成项
+node auto-brush.js --point-id 157455 --dry-run   # 仅匹配不点击（验证题库覆盖度）
+node auto-brush.js --point-id 157455 --headed    # 显示浏览器窗口
 ```
 
-> `playwright` 是 Playwright 的 Node.js API 包（非 CLI），与 `@playwright/cli` 互补。脚本复用同一份 `storage-state.json` 登录态。
+> **前置**: `npm install playwright && npx playwright install chromium`。脚本复用 `storage-state.json` 和 `题库.md`。
+> **闭环**: 脚本未匹配题目写入 `unmatched.log` → CC 读取 → 补充题库 → 重新运行脚本。
+> **掌握度判定**: 脚本从 learnPage（而非结果页）读取最终掌握度，最可靠。
 
-### 9.3 工作流程
-
-```
-┌─────────────────────────────────────────────────┐
-│ Phase 1: Claude 探索入库（第五章程）              │
-│ - 逐题 AI 判断答案                                │
-│ - 答错时查看解析，记录正确答案                      │
-│ - 按格式追加到 题库.md                             │
-│ - 掌握度 ≥ 97% 即完成本轮                         │
-└─────────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────────┐
-│ Phase 2: 脚本自动重复                              │
-│ node auto-brush.js --point "知识点名"              │
-│                                                   │
-│ 1. 加载 storage-state.json（复用登录态）           │
-│ 2. 解析 题库.md → 构建 关键词→答案 索引           │
-│ 3. 导航到 learnPage                               │
-│ 4. 循环每轮:                                      │
-│    a. 点击「去提升」→ masteryHistory              │
-│    b. 点击「去提升 →」→ 答题页                    │
-│    c. 逐题读取 → 关键词匹配 题库 → 点击选项       │
-│    d. 提交作业 → Enter×2 + dispatchEvent 弹窗    │
-│    e. 等待结果页 → 读取掌握度                     │
-│    f. ≥97% 累计计数 → 连续3轮 = 100%             │
-│ 5. 更新 progress.md                               │
-│ 6. 未匹配题目写入 unmatched.log                    │
-└─────────────────────────────────────────────────┘
-```
-
-### 9.4 配置
-
-编辑 `auto-brush.js` 顶部 `CONFIG` 对象：
-
-```js
-const CONFIG = {
-  courseId: '2026577676684390400',   // 从课程页 URL 提取
-  classId:  '1818580932072968192',   // 从课程页 URL 提取
-  headless: false,                    // 是否隐藏浏览器窗口
-  storageState:  path.join(__dirname, 'storage-state.json'),
-  questionBank:  path.join(__dirname, '题库.md'),
-  progressFile:  path.join(__dirname, 'progress.md'),
-  timeout: {
-    navigation:   30000,  // 页面导航超时
-    submitResult: 15000,  // 提交后等待结果页
-    // ...
-  },
-};
-```
-
-> `courseId` 和 `classId` 从课程主页 URL 中提取（格式：`/singleCourse/knowledgeStudy/{courseId}/{classId}`）。
-
-### 9.5 使用方式
-
-```bash
-# 按知识点名称刷（在课程页左侧导航 DOM 中搜索）
-node auto-brush.js --point "癌前病变和原位癌"
-
-# 按 pointId 直接刷（跳过 DOM 搜索，最可靠）
-node auto-brush.js --point-id 157455
-
-# 指定轮数（默认 3 轮）
-node auto-brush.js --point "凋亡" --rounds 2
-
-# 显示浏览器窗口（调试用）
-node auto-brush.js --point "凋亡" --headed
-
-# 仅匹配不点击（验证题库覆盖度）
-node auto-brush.js --point "癌前病变和原位癌" --dry-run
-
-# 批量处理 progress.md 中所有 <100% 的知识点
-node auto-brush.js --all
-```
-
-### 9.6 关键词匹配机制
-
-脚本从 `题库.md` 提取所有 `### 关键词` 作为匹配索引。运行时将页面题目文本与所有关键词做子串匹配：
-
-| 置信度 | 条件 | 动作 |
-|--------|------|------|
-| **HIGH** | 唯一命中，关键词 ≥ 5 字 | 直接使用 |
-| **MEDIUM** | 唯一命中，关键词 4 字；或多个 ≥5 字命中选最长 | 使用，记录提示 |
-| **LOW** | 命中关键词 ≤ 3 字；或多个等长命中 | 使用但记录警告 |
-| **NONE** | 无命中 | 跳过该题，写入 `unmatched.log` |
-
-> **关键**：第 1 轮 Claude 入库时选择 **5 字以上**独特关键词，确保脚本匹配可靠性。太短或太泛的关键词会导致误匹配或低置信度降级。
-
-### 9.7 多重降级策略
-
-脚本每个关键步骤均有 2-4 个备选方案，确保不卡死：
-
-| 步骤 | 方案 A（首选） | 方案 B | 方案 C | 方案 D（兜底） |
-|------|-------------|--------|--------|--------------|
-| **知识点定位** | URL 直接导航（pointId） | DOM 遍历文本匹配 | Vue `__vue_app__` 数据提取 | — |
-| **进入答题页** | JS evaluate 精确文本 | locator text= 包含匹配 | class 选择器 | masteryHistory URL 直接导航 |
-| **单选点击** | `getByText` 精确匹配 | `getByText` 包含匹配 | JS evaluate 遍历点击 | `mouse.click` 坐标 |
-| **多选点击** | `mouse.click(boundingBox)` | JS click + is-checked 检测 | `getByText` 降级 | — |
-| **提交弹窗** | `keyboard Enter` × 2 | `dispatchEvent` 遍历按钮 | 额外 Enter 第 3 层 | 可见确认按钮逐个点击 |
-| **掌握度** | `.mastery-score` 元素 | 页面文本正则 `掌握度: N%` | 可见百分比元素遍历 | — |
-| **题目读取** | `.questionName, .questionContent` | `[class*="question"]` 区域 | body.innerText 模式匹配 | — |
-
-### 9.8 安全保护
-
-- **全部未匹配**：拒绝提交，保护现有掌握度不被空白试卷破坏
-- **0 题检测**：页面未加载完成时立即退出
-- **登录态过期**：启动时检测重定向到登录页，清晰报错
-- **半数以上未匹配**：警告但仍继续（至少答对了一半）
-
-### 9.9 未匹配题目闭环
-
-脚本运行中无法匹配的题目写入 `unmatched.log`。在下一次 Claude 会话中：
-
-```
-1. CC 读取 unmatched.log
-2. 导航到该知识点 → 逐题作答
-3. 查看解析，记录正确答案到 题库.md
-4. 删除 unmatched.log 中已处理的条目
-```
-
-这样形成了 **Claude 探索 → 脚本重复 → 未匹配回补 → 脚本再刷** 的完整闭环。
-
-### 9.10 常见问题
-
-**Q: 脚本和 Claude 能同时运行吗？**
-可以。脚本使用独立 Chromium 进程（不通过 CLI session），与 Claude 的浏览器互不干扰。
-
-**Q: 登录态过期了怎么办？**
-脚本启动时会检测，过期则提示重新运行 Claude 登录并 `state-save`。
-
-**Q: 脚本匹配错误导致答错怎么办？**
-答错后掌握度 < 97%，脚本会重置连续计数。下一轮从 learnPage 重新获取 paperId。同时检查 `unmatched.log` 中的匹配记录。
-
-**Q: dry-run 有什么用？**
-在正式运行前验证题库覆盖度。`--dry-run` 执行完整流程但不点击任何按钮、不提交，输出匹配报告。
-
-**Q: 关键词选太短导致误匹配？**
-可以在 `题库.md` 中手动将关键词改长（编辑 `###` 后的文字），脚本下次运行会自动使用新关键词。
+> **前置**: `npm install playwright`。脚本复用 `storage-state.json` 和 `题库.md`。
+> **闭环**: 脚本未匹配题目写入 `unmatched.log` → CC 读取 → 补充题库 → 重新运行脚本。

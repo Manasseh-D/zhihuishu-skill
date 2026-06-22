@@ -3,12 +3,12 @@
  * auto-brush.js — 智慧树知识点自动重复刷题脚本
  *
  * 用法:
- *   node auto-brush.js --point "癌前病变和原位癌"
- *   node auto-brush.js --point-id 157455                    (跳过 DOM 搜索)
- *   node auto-brush.js --point "凋亡" --rounds 2
- *   node auto-brush.js --point "凋亡" --headed
+ *   node auto-brush.js --point-id 157455                    (推荐: 跳过 DOM 搜索)
+ *   node auto-brush.js --point "癌前病变和原位癌"           (按名称搜索)
+ *   node auto-brush.js --point-id 157455 --rounds 2
+ *   node auto-brush.js --point-id 157455 --headed
  *   node auto-brush.js --all                                (批量处理)
- *   node auto-brush.js --point "癌前病变和原位癌" --dry-run  (仅匹配不点击)
+ *   node auto-brush.js --point-id 157455 --dry-run          (仅匹配不点击)
  *
  * 依赖: npm install playwright
  * 复用: storage-state.json（登录态）, 题库.md（答案库）
@@ -17,6 +17,7 @@
  *   - 每个关键步骤 2-4 个备选方案，不卡死
  *   - 关键词匹配底线 5 字（高置信度），低于 5 字逐级降级
  *   - 接受臃肿，可靠性优先
+ *   - 全自动运行，中断后才需要 Claude 介入
  */
 
 const { chromium } = require('playwright');
@@ -30,7 +31,7 @@ const CONFIG = {
   // 课程 ID 和班级 ID（从智慧树课程页 URL 中提取）
   // URL 格式: /singleCourse/knowledgeStudy/{courseId}/{classId}
   courseId: '2026577676684390400',
-  classId:  '1818580932072968192',
+  classId:  '157455',
 
   // 浏览器模式: false=显示窗口（调试用）, true=无头运行
   headless: false,
@@ -362,10 +363,10 @@ async function launchBrowser(opts) {
   // 检测登录态是否有效
   const page = await context.newPage();
   await page.goto('https://onlineweb.zhihuishu.com/onlinestuh5', {
-    waitUntil: 'domcontentloaded',
+    waitUntil: 'networkidle',
     timeout: CONFIG.timeout.navigation,
   });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(3000);
 
   const currentUrl = page.url();
   if (currentUrl.includes('passport.zhihuishu.com/login')) {
@@ -404,101 +405,122 @@ async function goToCourseHome(page) {
 async function findKnowledgePoint(page, targetName) {
   log('INFO', `查找知识点: "${targetName}"`);
 
-  // 方案 A+B+C: 从页面抓取所有知识点信息
+  // 方案 A: 通过 knowledgeId-{pointId} 元素直接提取（新版 DOM）
+  // 方案 B: 点击各章节标签展开后搜索
+  // 方案 C: Vue 数据提取兜底
+
   const result = await page.evaluate((name) => {
+    // 尝试1: 通过 [id^="knowledgeId-"] 直接获取（如果当前标签页已展开）
+    const allIdEls = document.querySelectorAll('[id^="knowledgeId-"]');
     const points = [];
 
-    // 尝试多种选择器组合
-    const selectors = [
-      '.knowledge-item', '.point-item', '.catalog-item',
-      '[class*="knowledge"]', '[class*="point"]', '[class*="catalog"]',
-      '.tree-node', '.el-tree-node',
-      '.sidebar-item', '.nav-item',
-      'li[class*="know"]', 'div[class*="know"]',
-    ];
+    for (const el of allIdEls) {
+      const text = (el.textContent || '').trim();
+      const masteryMatch = text.match(/(\d{1,3})\s*%/);
+      const mastery = masteryMatch ? parseInt(masteryMatch[1], 10) : null;
+      const displayName = text.replace(/\d{1,3}\s*%/g, '').trim();
 
-    const seen = new Set();
-    for (const sel of selectors) {
-      for (const el of document.querySelectorAll(sel)) {
-        const text = el.textContent?.trim() || '';
-        const id = el.id || '';
-        const key = text.slice(0, 50);
-        if (seen.has(key)) continue;
-        seen.add(key);
-
-        // 提取掌握度百分比
-        const masteryMatch = text.match(/(\d{1,3})%/);
-        const mastery = masteryMatch ? parseInt(masteryMatch[1], 10) : null;
-
-        // 提取知识点名称（去百分比和无关文本）
-        let displayName = text.replace(/\d{1,3}%/g, '').trim();
-
-        points.push({
-          name: displayName,
-          fullText: text.slice(0, 200),
-          id: id.replace('knowledgeId-', '') || null,
-          mastery: mastery,
-        });
-      }
-      if (points.length > 0) break; // 找到就停止尝试更多选择器
+      points.push({
+        name: displayName.slice(0, 60),
+        fullText: text.slice(0, 150),
+        id: el.id.replace('knowledgeId-', ''),
+        mastery,
+      });
     }
 
-    // 方案 C: 如果选择器都找不到，尝试从 Vue 数据中提取
+    // 尝试2: 如果 knowledgeId 元素为空，尝试从任意包含知识点名称的元素中提取
     if (points.length === 0) {
-      try {
-        const app = document.querySelector('#app')?.__vue_app__;
-        if (app) {
-          // 递归查找可能的知识点数据
-          function findPoints(obj, depth) {
-            if (depth > 5) return;
-            if (!obj || typeof obj !== 'object') return;
-            if (Array.isArray(obj)) {
-              for (const item of obj) {
-                if (item?.name && item?.id) {
-                  points.push({
-                    name: String(item.name),
-                    fullText: String(item.name),
-                    id: String(item.id),
-                    mastery: item.mastery || item.masteryPercent || null,
-                  });
-                }
-                findPoints(item, depth + 1);
-              }
-            }
+      const seen = new Set();
+      const selectors = [
+        '[class*="knowledge"]', '[class*="point"]',
+        '.tree-node', '.el-tree-node',
+        '[id^="rc-tabs"][id*="panel"] > div > div',
+      ];
+      for (const sel of selectors) {
+        for (const el of document.querySelectorAll(sel)) {
+          const text = (el.textContent || '').trim();
+          const key = text.slice(0, 30);
+          if (seen.has(key) || !text) continue;
+          seen.add(key);
+
+          const masteryMatch = text.match(/(\d{1,3})\s*%/);
+          const mastery = masteryMatch ? parseInt(masteryMatch[1], 10) : null;
+          const displayName = text.replace(/\d{1,3}\s*%/g, '').replace(/学习进度/g, '').trim();
+
+          // 过滤掉太长的文本（通常是容器而非知识点本身）
+          if (displayName.length > 5 && displayName.length < 80) {
+            points.push({
+              name: displayName,
+              fullText: text.slice(0, 150),
+              id: el.id?.replace('knowledgeId-', '') || el.id || null,
+              mastery,
+            });
           }
-          // 不执行，太危险且耗时，仅作概念保留
         }
-      } catch (_) {}
+        if (points.length > 5) break;
+      }
     }
 
-    // 匹配目标知识点
+    // 匹配目标
     for (const p of points) {
-      if (p.name.includes(name) || name.includes(p.name) || p.fullText.includes(name)) {
+      if (p.name.includes(name) || name.includes(p.name)) {
         return { found: true, ...p };
       }
     }
-
     return { found: false, allPoints: points.slice(0, 30) };
   }, targetName);
 
   if (result.found && result.name) {
     log('SUCCESS', `找到知识点: "${result.name}" (掌握度: ${result.mastery ?? '未知'}%)`);
-    return {
-      pointId: result.id,
-      pointName: result.name,
-      mastery: result.mastery,
-    };
+    return { pointId: result.id, pointName: result.name, mastery: result.mastery };
   }
 
-  // 未找到，列出候选项
+  // 未找到：尝试遍历各章节标签
+  log('INFO', '直接搜索未命中，遍历章节标签展开查找...');
+  try {
+    const tabIds = await page.evaluate(() => {
+      return [...document.querySelectorAll('[id^="rc-tabs-"][id$="-tab-"]')]
+        .map(el => el.id);
+    });
+
+    for (const tabId of tabIds) {
+      try {
+        await page.locator(`#${tabId}`).click({ timeout: 2000 });
+        await page.waitForTimeout(500);
+      } catch (_) { continue; }
+
+      // 在展开的标签页内搜索
+      const found = await page.evaluate((name) => {
+        for (const el of document.querySelectorAll('[id^="knowledgeId-"]')) {
+          const text = (el.textContent || '').trim();
+          if (text.includes(name)) {
+            const masteryMatch = text.match(/(\d{1,3})\s*%/);
+            return {
+              found: true,
+              name: text.replace(/\d{1,3}\s*%/g, '').trim().slice(0, 60),
+              id: el.id.replace('knowledgeId-', ''),
+              mastery: masteryMatch ? parseInt(masteryMatch[1], 10) : null,
+            };
+          }
+        }
+        return { found: false };
+      }, targetName);
+
+      if (found.found) {
+        log('SUCCESS', `在标签页中找到知识点: "${found.name}" (${found.mastery ?? '?'}%)`);
+        return { pointId: found.id, pointName: found.name, mastery: found.mastery };
+      }
+    }
+  } catch (_) {}
+
   log('ERROR', `未找到匹配的知识点: "${targetName}"`);
-  if (result.allPoints && result.allPoints.length > 0) {
-    log('INFO', '页面上的知识点列表:');
-    for (const p of result.allPoints.slice(0, 20)) {
+  if (result.allPoints?.length > 0) {
+    log('INFO', `页面上可见的 ${result.allPoints.length} 个知识点:`);
+    for (const p of result.allPoints.slice(0, 15)) {
       console.log(`    - "${p.name}" (id=${p.id}, 掌握度=${p.mastery}%)`);
     }
   } else {
-    log('WARN', '未能从页面提取任何知识点列表（DOM 选择器可能需要更新）');
+    log('WARN', '无法从页面提取知识点列表 — 建议使用 --point-id 模式');
   }
   return null;
 }
@@ -515,7 +537,7 @@ async function goToLearnPage(page, pointInfo) {
   if (pointId) {
     const url = `https://ai-smart-course-student-pro.zhihuishu.com/learnPage/${CONFIG.courseId}/${pointId}/${CONFIG.classId}?catalogActiveTab=personal`;
     log('INFO', `方案A: URL 导航到 learnPage (pointId=${pointId})`);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: CONFIG.timeout.navigation });
+    await page.goto(url, { waitUntil: 'networkidle', timeout: CONFIG.timeout.navigation });
     await page.waitForTimeout(CONFIG.timeout.pageStable);
     return true;
   }
@@ -624,13 +646,32 @@ async function goToExamPage(page) {
   await page.waitForTimeout(CONFIG.timeout.pageStable);
 
   // === 步骤 2: 点击「去提升 →」→ 跳转答题页 ===
+  // ⚠️ 经验证 getByText('去提升 →') 在 headed 模式下间歇性失败（箭头字符问题）
+  // JS evaluate 遍历 textContent 更可靠
   const step2Success = await retryUntil(async () => {
-    // 方案 B1: JS 精确定位 "去提升 →"（含箭头字符）
+    // 方案 A: JS evaluate 精准遍历（优先，最可靠）
     try {
       const clicked = await page.evaluate(() => {
+        // 先精确匹配
         for (const el of document.querySelectorAll('div, span, a, button')) {
-          const t = el.textContent?.trim() || '';
-          if (t === '去提升 →' || t === '去提升→') {
+          const t = (el.textContent || '').trim();
+          if (t === '去提升 →' || t === '去提升→' || t === '去提升 → ' || t === '去提升') {
+            el.click();
+            return t;
+          }
+        }
+        // 模糊匹配（包含"去提升"且包含"→"）
+        for (const el of document.querySelectorAll('div, span, a, button')) {
+          const t = (el.textContent || '').trim();
+          if (t.includes('去提升') && t.includes('→')) {
+            el.click();
+            return t;
+          }
+        }
+        // 只含"去提升"的短文本也点击
+        for (const el of document.querySelectorAll('div, span, a, button')) {
+          const t = (el.textContent || '').trim();
+          if (t === '去提升' || t.startsWith('去提升')) {
             el.click();
             return t;
           }
@@ -638,38 +679,22 @@ async function goToExamPage(page) {
         return null;
       });
       if (clicked) {
-        log('INFO', `步骤2 方案B1: JS evaluate 点击 "${clicked}" 成功`);
+        log('INFO', `步骤2 方案A: JS evaluate 点击 "${clicked}" 成功`);
         return true;
       }
     } catch (_) {}
 
-    // 方案 B2: 文本包含匹配
+    // 方案 B: getByText 文本匹配
     try {
       const links = page.locator('text=去提升');
       const count = await links.count();
       for (let i = 0; i < count; i++) {
         const text = await links.nth(i).textContent();
-        if (text && text.includes('去提升') && text.includes('→')) {
+        if (text) {
           await links.nth(i).click();
-          log('INFO', '步骤2 方案B2: locator text=去提升 点击成功');
+          log('INFO', `步骤2 方案B: locator 点击成功 "${text.slice(0, 20)}"`);
           return true;
         }
-      }
-      // 如果只有不含箭头的，也点击第一个
-      if (count > 0) {
-        await links.first().click();
-        log('INFO', '步骤2 方案B2降级: 点击第一个含"去提升"的元素');
-        return true;
-      }
-    } catch (_) {}
-
-    // 方案 B3: 按 class 名查找
-    try {
-      const btn = page.locator('.improve-btn, [class*="improve"], .go-improve').first();
-      if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
-        await btn.click();
-        log('INFO', '步骤2 方案B3: .improve-btn 点击成功');
-        return true;
       }
     } catch (_) {}
 
@@ -715,18 +740,29 @@ async function goToExamPage(page) {
  */
 async function getTotalQuestions(page) {
   const count = await page.evaluate(() => {
-    // 方案 A: 答题卡项
-    const treeItems = document.querySelectorAll('.custom-tree-answer-normal, .tree-item, [class*="answer-normal"]');
-    if (treeItems.length > 0) return treeItems.length;
+    // 方案 A: 从答题卡的 [role="tree"] 中统计 treeitem 数量
+    // 排除父级 treeitem（"知识点练习默认部分"），只统计数字编号的子项
+    const tree = document.querySelector('[role="tree"]');
+    if (tree) {
+      const items = tree.querySelectorAll('[role="treeitem"]');
+      // 过滤出数字编号的 treeitem（如 "1", "2", "3"...）
+      const numbered = [...items].filter(el => {
+        const text = el.textContent?.trim() || '';
+        return /^\d+$/.test(text);
+      });
+      if (numbered.length > 0) return numbered.length;
+    }
 
-    // 方案 B: 题号指示器
-    const indicators = document.querySelectorAll('.question-num, .q-num, [class*="question-num"]');
-    if (indicators.length > 0) return indicators.length;
+    // 方案 B: 答题卡中的答题状态项
+    const answerItems = document.querySelectorAll('.custom-tree-answer-normal, .custom-tree-answer');
+    if (answerItems.length > 0) return answerItems.length;
 
-    // 方案 C: 题目区域计数
-    const questions = document.querySelectorAll('.question-item, .questionName, [class*="question"]');
-    const visible = [...questions].filter(q => q.offsetParent !== null);
-    if (visible.length > 0) return Math.min(visible.length, 10);
+    // 方案 C: 题号导航列表
+    const nav = document.querySelector('.question-nav, [class*="question-nav"]');
+    if (nav) {
+      const nums = nav.querySelectorAll('li, span, button');
+      if (nums.length > 0) return nums.length;
+    }
 
     return 6; // 默认
   });
@@ -742,31 +778,74 @@ async function getTotalQuestions(page) {
  * 方案 C: 页面主内容区域文本
  */
 async function readCurrentQuestion(page) {
-  const text = await page.evaluate(() => {
-    // 方案 A
-    const q = document.querySelector('.questionName, .questionContent, .q-title');
-    if (q?.textContent?.trim()) return q.textContent.trim();
+  const SKIP_PATTERN = /知识点练习默认部分|答题卡|已作答|未作答|提交作业|上一题|下一题|答题进度|错题反馈|返回/;
 
-    // 方案 B: 可见的题目区域
-    for (const el of document.querySelectorAll('[class*="question"]')) {
-      if (el.offsetParent !== null) {
-        const t = el.textContent?.trim();
-        if (t && t.length > 10) return t.slice(0, 200);
+  const text = await page.evaluate((skipPatternStr) => {
+    const skipPattern = new RegExp(skipPatternStr);
+
+    // 智慧树答题页 DOM 结构 (v2):
+    //   <div class="question-item">      或  <generic ref=e30>
+    //     <div>                          ← 题目容器
+    //       <span>1. 单选题</span>        ← 题号类型
+    //       <span>题目文本内容</span>      ← 题干
+    //     </div>
+    //     <ul>或<group>                  ← 选项列表
+    //       <li>...</li>
+    //     </ul>
+    //   </div>
+
+    // 方案 A: 找到选项列表之前的兄弟元素文本
+    const optionContainers = document.querySelectorAll('ul, ol, [role="group"], .options, [class*="option-list"]');
+    for (const optsContainer of optionContainers) {
+      if (optsContainer.offsetParent === null) continue; // 跳过不可见
+      // 找到选项容器前面的同级元素（通常是题目文本容器）
+      let sibling = optsContainer.previousElementSibling;
+      if (sibling) {
+        const t = sibling.textContent?.trim();
+        if (t && t.length >= 5 && t.length <= 600 && !skipPattern.test(t)) {
+          // 去掉首行的题号前缀 "1. 单选题" 或 "2. 多选题"
+          const cleaned = t.replace(/^\d+\.\s*(单选题|多选题|判断题)\s*/, '').trim();
+          if (cleaned.length >= 3) return cleaned.slice(0, 300);
+        }
       }
     }
 
-    // 方案 C: 主体内容中查找题目模式（含问号、括号等）
-    const body = document.querySelector('.exam-content, .test-content, main, .main');
-    const text = (body || document.body).innerText || '';
-    const lines = text.split('\n').filter(l => l.trim().length > 10);
+    // 方案 B: .questionName / .questionContent 直接匹配
+    const qEl = document.querySelector('.questionName, .questionContent, .q-title');
+    if (qEl?.textContent?.trim()) {
+      const full = qEl.textContent.trim();
+      if (!skipPattern.test(full)) {
+        const cleaned = full.replace(/^\d+\.\s*(单选题|多选题|判断题)\s*/, '').trim();
+        if (cleaned.length >= 3) return cleaned.slice(0, 300);
+      }
+    }
+
+    // 方案 C: 从可见的题目面板元素中提取，排除选项区域
+    const examArea = document.querySelector('.exam-content, .test-content, [class*="exam-area"], main');
+    const root = examArea || document.body;
+    const clone = root.cloneNode(true);
+    for (const list of clone.querySelectorAll('ul, ol, [role="group"], [role="tree"]')) {
+      list.remove();
+    }
+    const bodyText = clone.innerText || clone.textContent || '';
+    const lines = bodyText.split('\n').filter(l => l.trim().length >= 8);
     for (const line of lines) {
-      if (/[?？]/.test(line) || /下列/.test(line) || /正确/.test(line) || /错误/.test(line)) {
-        return line.trim().slice(0, 200);
+      if (skipPattern.test(line)) continue;
+      if (/[?？]/.test(line) || /下列/.test(line) || /正确/.test(line) || /错误/.test(line) || /\([^)]*\)/.test(line) || /关于/.test(line)) {
+        return line.trim().replace(/^\d+\.\s*(单选题|多选题|判断题)\s*/, '').slice(0, 300);
       }
     }
 
-    return text.slice(0, 200);
-  });
+    // 方案 D: 兜底 — 第一个非UI文本的行
+    for (const line of lines) {
+      const cleaned = line.trim().replace(/^\d+\.\s*(单选题|多选题|判断题)\s*/, '').trim();
+      if (cleaned.length >= 6 && !skipPattern.test(cleaned)) {
+        return cleaned.slice(0, 300);
+      }
+    }
+
+    return '';
+  }, SKIP_PATTERN.source);
 
   return text;
 }
@@ -1086,39 +1165,71 @@ async function submitAndHandleDialogs(page) {
 // ============================================================
 
 /**
- * 读取当前掌握度百分比
- * 方案 A: 结果页 mastery 元素
- * 方案 B: 返回 learnPage 读取
- * 方案 C: JS 全局搜索百分比
+ * 读取当前页面掌握度百分比
+ * 方案优先级: bestScore > masteryText > 任意百分比
+ * 注意: 结果页的"当前掌握度"可能不准，优先取"最好成绩"
  */
 async function checkMastery(page) {
   const mastery = await page.evaluate(() => {
-    // 方案 A: 掌握度元素
-    for (const sel of ['.mastery-score', '.mastery-percent', '.score', '[class*="mastery"]']) {
-      const el = document.querySelector(sel);
-      if (el) {
-        const m = el.textContent?.trim().match(/(\d{1,3})/);
-        if (m) return parseInt(m[1], 10);
-      }
+    // 方案 A: 结果页读取「最好成绩」— 最可靠
+    const bodyText = document.body.innerText || '';
+    const bestMatch = bodyText.match(/最好成绩\s*(\d{1,3})%/);
+    if (bestMatch) {
+      const v = parseInt(bestMatch[1], 10);
+      // 0% 通常表示数据还没刷新，尝试其他来源
+      if (v > 0) return v;
     }
 
-    // 方案 B: 页面文本中查找百分比
-    const body = document.body.innerText || '';
-    const matches = body.match(/掌握度[：:\s]*(\d{1,3})%/);
-    if (matches) return parseInt(matches[1], 10);
+    // 方案 B: 「掌握度」关键词后面的百分比（可能是当前分或最高分）
+    const allMasteryMatches = bodyText.match(/掌握度\s*(\d{1,3})%/);
+    if (allMasteryMatches) {
+      const v = parseInt(allMasteryMatches[1], 10);
+      if (v > 0) return v;
+    }
 
-    // 方案 C: 所有包含百分比的元素
+    // 方案 C: 直接找标记了"掌握度"的可见 span/div
     for (const el of document.querySelectorAll('span, div, p')) {
       const t = el.textContent?.trim() || '';
-      if (/^\d{1,3}%$/.test(t) && el.offsetParent !== null) {
-        return parseInt(t, 10);
+      // 匹配 "97%掌握度" 或 "掌握度97%"
+      const m = t.match(/^(\d{1,3})%掌握度$/);
+      if (m) {
+        const v = parseInt(m[1], 10);
+        if (v > 0) return v;
       }
     }
+
+    // 方案 D: 单独的百分比元素（可能同时有多个值，取最大的）
+    let max = 0;
+    for (const el of document.querySelectorAll('span, div')) {
+      const t = el.textContent?.trim() || '';
+      if (/^\d{1,3}%$/.test(t) && el.offsetParent !== null) {
+        const v = parseInt(t, 10);
+        if (v > max) max = v;
+      }
+    }
+    if (max > 0) return max;
 
     return null;
   });
 
   return mastery;
+}
+
+/**
+ * 返回 learnPage 并读取掌握度（比结果页更可靠）
+ */
+async function checkMasteryOnLearnPage(page, pointInfo) {
+  await goBackToLearnPage(page, pointInfo);
+  return await page.evaluate(() => {
+    const bodyText = document.body.innerText || '';
+    // 知识点最高掌握度：XX%
+    const m = bodyText.match(/最高掌握度[：:\s]*(\d{1,3})%/);
+    if (m) return parseInt(m[1], 10);
+    // 备用
+    const m2 = bodyText.match(/掌握度[：:\s]*(\d{1,3})%/);
+    if (m2) return parseInt(m2[1], 10);
+    return null;
+  });
 }
 
 /**
@@ -1279,16 +1390,16 @@ async function doOneRound(page, bank, roundNum, opts) {
     return { success: true, matched, unmatched, total: totalQs };
   }
 
-  // 护卫: 全部未匹配时拒绝提交（防止空白试卷破坏掌握度）
-  if (unmatched >= totalQs && totalQs > 0) {
-    log('ERROR', `第${roundNum}轮: ${totalQs} 道题全部未匹配！跳过提交，保护现有掌握度`);
-    log('ERROR', '请先用 Claude 完善本题知识点的题库覆盖，再运行脚本');
+  // 护卫: 全部未匹配且至少2题（可能是题库完全未覆盖该知识点）
+  if (unmatched >= totalQs && totalQs >= 2) {
+    log('WARN', `第${roundNum}轮: ${totalQs} 道题全部未匹配！跳过提交，保持现有掌握度`);
     return { success: false, matched: 0, unmatched, total: totalQs, reason: 'ALL_UNMATCHED' };
   }
 
-  // 护卫: 未匹配超半数时警告但仍继续（至少答对了一半）
+  // 未匹配超半数时警告但不阻断
   if (unmatched > totalQs / 2) {
-    log('WARN', `第${roundNum}轮: ${unmatched}/${totalQs} 道题未匹配（>50%），提交后可能降低掌握度`);
+    log('WARN', `第${roundNum}轮: ${unmatched}/${totalQs} 道题未匹配（>50%）`);
+    log('WARN', '匹配的题已作答，未匹配的题跳过。掌握度可能不会提升。');
   }
 
   // 5. 提交
@@ -1299,12 +1410,19 @@ async function doOneRound(page, bank, roundNum, opts) {
     return { success: false, matched, unmatched, total: totalQs };
   }
 
-  // 5. 检查掌握度
+  // 6. 先快速读取结果页掌握度
   await page.waitForTimeout(2000);
-  const mastery = await checkMastery(page);
-  log('INFO', `第 ${roundNum} 轮完成: 掌握度=${mastery ?? '?'}%, 匹配=${matched}/${totalQs}, 未匹配=${unmatched}`);
+  const quickMastery = await checkMastery(page);
 
-  return { success: true, mastery, matched, unmatched, total: totalQs };
+  // 如果结果页读数无效（0 或 null），记下来，后续从 learnPage 再读
+  const needsLearnPageCheck = (quickMastery === null || quickMastery === 0);
+
+  log('INFO', `第 ${roundNum} 轮完成: 结果页${quickMastery ?? '?'}%, 匹配=${matched}/${totalQs}, 未匹配=${unmatched}`);
+  if (needsLearnPageCheck) {
+    log('INFO', '结果页掌握度读数为0/null，将在返回 learnPage 后复核');
+  }
+
+  return { success: true, mastery: quickMastery, matched, unmatched, total: totalQs, needsLearnPageCheck };
 }
 
 // ============================================================
@@ -1350,39 +1468,47 @@ async function processOnePoint(page, bank, pointInfo, opts) {
 
   // 逐轮答题
   let consecutivePasses = 0;
+  let bestMastery = initialMastery ?? 0;
   const maxRounds = opts.rounds;
   const roundResults = [];
+  let totalRoundsRun = 0;
 
   for (let r = 1; r <= maxRounds; r++) {
+    totalRoundsRun = r;
     // 导航到 learnPage（每轮从 learnPage 开始以获取新 paperId）
     await goBackToLearnPage(page, fullPointInfo);
 
     const result = await doOneRound(page, bank, r, opts);
     roundResults.push(result);
 
-    if (opts.dryRun) break; // dry-run 只跑一轮
+    if (opts.dryRun) break;
 
-    if (result.success && result.mastery !== null) {
-      if (result.mastery >= 97) {
+    // 每轮结束后回到 learnPage 读掌握度（最可靠来源）
+    const learnPageMastery = await checkMasteryOnLearnPage(page, fullPointInfo);
+    const currentMastery = learnPageMastery ?? result.mastery ?? 0;
+
+    if (currentMastery > bestMastery) bestMastery = currentMastery;
+
+    // 基于 learnPage 数据判断
+    if (result.success && result.reason !== 'ALL_UNMATCHED') {
+      if (currentMastery >= 97) {
         consecutivePasses++;
-        log('SUCCESS', `第 ${r} 轮 ≥97%，连续通过: ${consecutivePasses}`);
+        log('SUCCESS', `第 ${r} 轮 learnPage 掌握度=${currentMastery}%，连续通过: ${consecutivePasses}/${CONFIG.rounds}`);
 
-        if (consecutivePasses >= 3) {
-          log('SUCCESS', `🎉 知识点 "${pointName}" 连续 3 轮 ≥97%，达到 100%！`);
+        if (consecutivePasses >= 3 || currentMastery >= 100) {
+          log('SUCCESS', `🎉 知识点 "${pointName}" 达到 ${currentMastery}%！`);
           break;
         }
       } else {
         consecutivePasses = 0;
-        log('WARN', `第 ${r} 轮 <97%，重置连续计数。检查未匹配题目并在下次 Claude 会话中补充题库`);
+        log('WARN', `第 ${r} 轮 learnPage 掌握度=${currentMastery}% (<97%)，重置连续计数`);
+        if (result.matched === result.total) {
+          log('WARN', '全部匹配但掌握度未提升，可能题库答案有误或题目池有新题');
+        }
       }
-    } else if (result.success && result.mastery === null) {
-      // 提交成功但无法读取掌握度（可能是页面结构变化）
-      log('WARN', `第 ${r} 轮: 提交成功但无法读取掌握度，假设通过继续计数`);
-      consecutivePasses++;  // 乐观策略：能成功提交说明答题流程正常
     } else if (!result.success && result.reason === 'ALL_UNMATCHED') {
-      // 全部未匹配，停止刷该知识点
-      log('ERROR', `第 ${r} 轮: 全部未匹配，停止刷 "${pointName}"`);
-      break;
+      log('WARN', `第 ${r} 轮全部未匹配，题库覆盖不足。保持当前掌握度 ${currentMastery}%`);
+      consecutivePasses = 0;
     }
 
     if (r < maxRounds) {
@@ -1393,14 +1519,14 @@ async function processOnePoint(page, bank, pointInfo, opts) {
 
   // 最终掌握度
   await goBackToLearnPage(page, fullPointInfo);
-  const finalMastery = await checkMastery(page);
-  log('INFO', `最终掌握度: ${finalMastery ?? '未知'}%`);
+  const finalMastery = await checkMasteryOnLearnPage(page, fullPointInfo) ?? bestMastery;
+  log('INFO', `最终掌握度: ${finalMastery}% (最佳: ${bestMastery}%, 共 ${totalRoundsRun} 轮)`);
 
   return {
     pointName,
-    completed: finalMastery !== null && finalMastery >= 100,
+    completed: finalMastery >= 100,
     finalMastery,
-    rounds: roundResults.length,
+    rounds: totalRoundsRun,
     results: roundResults,
   };
 }
