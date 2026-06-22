@@ -53,7 +53,86 @@ const CONFIG = {
 
   // 轮次间间隔（毫秒）
   roundDelay: 2000,
+
+  // 恢复等待: ALL_UNMATCHED 后等待 Claude 介入的最大时间（毫秒）
+  resumeTimeout: 120000,
 };
+
+// ============================================================
+// Hook 事件总线（IPC: 脚本 ↔ Claude Code）
+// ============================================================
+const EVENT_FILE    = path.join(__dirname, 'hook-events.jsonl');
+const STATUS_FILE   = path.join(__dirname, 'script-status.json');
+const RESUME_SIGNAL = path.join(__dirname, 'resume.signal');
+
+let currentPointMeta = { pointId: null, pointName: null };
+
+/** 追加事件到 hook-events.jsonl */
+function emitEvent(type, data = {}) {
+  try {
+    const line = JSON.stringify({
+      type,
+      ts: new Date().toISOString(),
+      pointId: currentPointMeta.pointId,
+      ...data,
+    });
+    fs.appendFileSync(EVENT_FILE, line + '\n', 'utf-8');
+  } catch (_) { /* hook 失败不阻塞主流程 */ }
+}
+
+/** 写入/更新 script-status.json */
+function updateStatus(data) {
+  try {
+    const status = {
+      pid: process.pid,
+      pointId: currentPointMeta.pointId,
+      pointName: currentPointMeta.pointName,
+      updatedAt: new Date().toISOString(),
+      ...data,
+    };
+    fs.writeFileSync(STATUS_FILE, JSON.stringify(status, null, 2), 'utf-8');
+  } catch (_) {}
+}
+
+/** 清除 status 文件 */
+function clearStatus() {
+  try { fs.unlinkSync(STATUS_FILE); } catch (_) {}
+  try { fs.unlinkSync(RESUME_SIGNAL); } catch (_) {}
+}
+
+/** 等待 Claude 介入（resume.signal 出现或超时） */
+async function waitForResume(context = '') {
+  const deadline = Date.now() + CONFIG.resumeTimeout;
+  log('WARN', `等待 Claude 介入解决 (${context})，最多 ${CONFIG.resumeTimeout / 1000}s...`);
+
+  while (Date.now() < deadline) {
+    if (fs.existsSync(RESUME_SIGNAL)) {
+      log('SUCCESS', '检测到 resume.signal，恢复运行');
+      try { fs.unlinkSync(RESUME_SIGNAL); } catch (_) {}
+      return true;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
+  log('ERROR', `等待超时 (${CONFIG.resumeTimeout / 1000}s)，放弃当前知识点`);
+  return false;
+}
+
+/** 自动更新 progress.md 中指定知识点的掌握度和日期 */
+function updateProgressFile(pointName, pointId, mastery, dateStr) {
+  try {
+    if (!fs.existsSync(CONFIG.progressFile)) return;
+    let content = fs.readFileSync(CONFIG.progressFile, 'utf-8');
+    const escapedName = pointName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rowRegex = new RegExp(`\\|\\s*${escapedName}\\s*\\|\\s*${pointId}\\s*\\|\\s*\\d{1,3}%\\s*\\|.*\\|`, 'g');
+
+    if (rowRegex.test(content)) {
+      const dateCol = dateStr ? ` ${dateStr} |` : ' |';
+      content = content.replace(rowRegex, `| ${pointName} | ${pointId} | ${mastery}% |${dateCol}`);
+      fs.writeFileSync(CONFIG.progressFile, content, 'utf-8');
+    }
+  } catch (_) {}
+}
 
 // ============================================================
 // CLI 参数解析
@@ -1290,6 +1369,8 @@ async function waitForStable(page, ms) {
 
 async function doOneRound(page, bank, roundNum, opts) {
   log('INFO', `━━━ 第 ${roundNum} 轮答题开始 ━━━`);
+  emitEvent('round_start', { round: roundNum });
+  updateStatus({ state: 'answering', currentRound: roundNum });
 
   // 1. 进入答题页
   const entered = await goToExamPage(page);
@@ -1323,6 +1404,9 @@ async function doOneRound(page, bank, roundNum, opts) {
 
     if (match && match.confidence !== 'LOW') {
       log('MATCH', `关键词="${match.matchedKeyword}" (${match.confidence}, ${match.entry.type})`);
+      emitEvent('question_matched', { round: roundNum, questionIndex: qi,
+        keyword: match.matchedKeyword, confidence: match.confidence,
+        questionType: match.entry.type });
 
       if (opts.dryRun) {
         log('INFO', `  [DRY-RUN] 将点击: ${match.entry.answers.join(', ')}`);
@@ -1356,6 +1440,8 @@ async function doOneRound(page, bank, roundNum, opts) {
       // 无匹配
       log('WARN', `题目 ${qi + 1} 未匹配到题库答案`);
       logUnmatched(qText, roundNum);
+      emitEvent('question_unmatched', { round: roundNum, questionIndex: qi,
+        questionText: qText.slice(0, 200) });
       unmatched++;
 
       if (opts.dryRun) {
@@ -1393,6 +1479,17 @@ async function doOneRound(page, bank, roundNum, opts) {
   // 护卫: 全部未匹配且至少2题（可能是题库完全未覆盖该知识点）
   if (unmatched >= totalQs && totalQs >= 2) {
     log('WARN', `第${roundNum}轮: ${totalQs} 道题全部未匹配！跳过提交，保持现有掌握度`);
+    emitEvent('error', { reason: 'ALL_UNMATCHED', round: roundNum,
+      totalQuestions: totalQs, unmatchedCount: unmatched });
+    updateStatus({ state: 'waiting_intervention', reason: 'ALL_UNMATCHED',
+      currentRound: roundNum });
+
+    // 等待 Claude 介入（补充题库后 touch resume.signal）
+    const resumed = await waitForResume(`ALL_UNMATCHED 第${roundNum}轮`);
+    if (resumed) {
+      log('INFO', '已恢复，重新尝试当前轮...');
+      return { success: false, matched: 0, unmatched, total: totalQs, reason: 'ALL_UNMATCHED', resumed: true };
+    }
     return { success: false, matched: 0, unmatched, total: totalQs, reason: 'ALL_UNMATCHED' };
   }
 
@@ -1421,6 +1518,9 @@ async function doOneRound(page, bank, roundNum, opts) {
   if (needsLearnPageCheck) {
     log('INFO', '结果页掌握度读数为0/null，将在返回 learnPage 后复核');
   }
+
+  emitEvent('round_complete', { round: roundNum, mastery: quickMastery,
+    matched, unmatched, total: totalQs, needsLearnPageCheck });
 
   return { success: true, mastery: quickMastery, matched, unmatched, total: totalQs, needsLearnPageCheck };
 }
@@ -1454,8 +1554,16 @@ async function processOnePoint(page, bank, pointInfo, opts) {
     fullPointInfo = { ...point, ...pointInfo };
   }
 
+  // 设置 hook 上下文
+  currentPointMeta = { pointId: fullPointInfo.pointId, pointName: fullPointInfo.pointName };
+
   // 导航到 learnPage
   await goToLearnPage(page, fullPointInfo);
+
+  // Hook: script_start
+  emitEvent('script_start', { pointName, totalRounds: opts.rounds, dryRun: opts.dryRun });
+  updateStatus({ state: 'running', currentRound: 0, totalRounds: opts.rounds,
+    mastery: null, bestMastery: 0 });
 
   // 读取当前掌握度
   const initialMastery = await checkMastery(page);
@@ -1489,11 +1597,19 @@ async function processOnePoint(page, bank, pointInfo, opts) {
 
     if (currentMastery > bestMastery) bestMastery = currentMastery;
 
+    emitEvent('round_learnpage', { round: r, mastery: currentMastery, bestMastery,
+      consecutivePasses });
+
+    // 自动更新 progress.md
+    if (!opts.dryRun && currentMastery > 0) {
+      updateProgressFile(pointName, fullPointInfo.pointId, currentMastery, null);
+    }
+
     // 基于 learnPage 数据判断
     if (result.success && result.reason !== 'ALL_UNMATCHED') {
       if (currentMastery >= 97) {
         consecutivePasses++;
-        log('SUCCESS', `第 ${r} 轮 learnPage 掌握度=${currentMastery}%，连续通过: ${consecutivePasses}/${CONFIG.rounds}`);
+        log('SUCCESS', `第 ${r} 轮 learnPage 掌握度=${currentMastery}%，连续通过: ${consecutivePasses}/${maxRounds}`);
 
         if (consecutivePasses >= 3 || currentMastery >= 100) {
           log('SUCCESS', `🎉 知识点 "${pointName}" 达到 ${currentMastery}%！`);
@@ -1509,6 +1625,12 @@ async function processOnePoint(page, bank, pointInfo, opts) {
     } else if (!result.success && result.reason === 'ALL_UNMATCHED') {
       log('WARN', `第 ${r} 轮全部未匹配，题库覆盖不足。保持当前掌握度 ${currentMastery}%`);
       consecutivePasses = 0;
+      // 若已恢复（resumed），不消耗轮次计数，重试同一轮
+      if (result.resumed) {
+        r--; // 重试当前轮
+        log('INFO', `重试第 ${r + 1} 轮（resumed=true）`);
+        continue;
+      }
     }
 
     if (r < maxRounds) {
@@ -1521,6 +1643,20 @@ async function processOnePoint(page, bank, pointInfo, opts) {
   await goBackToLearnPage(page, fullPointInfo);
   const finalMastery = await checkMasteryOnLearnPage(page, fullPointInfo) ?? bestMastery;
   log('INFO', `最终掌握度: ${finalMastery}% (最佳: ${bestMastery}%, 共 ${totalRoundsRun} 轮)`);
+
+  // Hook: point_complete / script_end
+  const today = new Date().toISOString().slice(0, 10);
+  if (!opts.dryRun) {
+    updateProgressFile(pointName, fullPointInfo.pointId, finalMastery,
+      finalMastery >= 100 ? today : null);
+  }
+  emitEvent(finalMastery >= 100 ? 'point_complete' : 'script_end', {
+    finalMastery, bestMastery, totalRounds: totalRoundsRun,
+    completed: finalMastery >= 100,
+  });
+  updateStatus({ state: finalMastery >= 100 ? 'completed' : 'partial',
+    mastery: finalMastery, bestMastery, currentRound: totalRoundsRun });
+  clearStatus();
 
   return {
     pointName,

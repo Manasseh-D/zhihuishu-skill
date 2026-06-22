@@ -7,9 +7,18 @@ storage-state.json
 # Playwright MCP 运行时文件（旧方案残留）
 .playwright-mcp/
 
+# Hook 事件总线（脚本运行时生成）
+hook-events.jsonl
+script-status.json
+resume.signal
+unmatched.log
+
 # 运行时日志/快照
 console-log.txt
 learnPage-snapshot.md
+
+# Node.js
+node_modules/
 
 # 系统文件
 .DS_Store
