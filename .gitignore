@@ -1,7 +1,10 @@
 # 登录态文件（含敏感 cookie）
 storage-state.json
 
-# Playwright MCP 运行时文件
+# Playwright CLI 运行时文件（快照、截图等）
+.playwright-cli/
+
+# Playwright MCP 运行时文件（旧方案残留）
 .playwright-mcp/
 
 # 运行时日志/快照

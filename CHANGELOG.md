@@ -1,5 +1,40 @@
 # CHANGELOG
 
+## v14 (2026-06-22) — 核心瓶颈突破
+
+基于**癌前病变和原位癌知识点连续3轮100%成功率**的实战验证：
+
+- **5.7 节重写**：完整 `run-code` 一键答题+提交模板，`keyboard.press('Enter')` × 2 + `dispatchEvent` 弹窗处理（连续 3 轮全部成功，URL 参数完整）
+- **关键纠正**：智慧树弹窗是**自定义 Vue 组件**非 Element Plus `el-message-box`，`waitForSelector('.el-message-box__wrapper')` 超时
+- Q18 更新：URL undefined 问题已解决
+- **完整流程模板**：`run-code` 包含逐题作答（关键词匹配 + `getByText` 点击）+ 键盘 Enter 弹窗链 + JS dispatchEvent 兜底
+- 发现 Vue 3 `__vue_app__` 可用于 Plan B（已探索但键盘方案更稳定）
+- 返回到 learnPage 后需 `reload` 才能看到最新掌握度（缓存问题）
+
+## v13 (2026-06-17) — CLI 实战修正
+
+基于 Pathology 课程实操验证，修正多个 CLI 文档与实际行为不一致的地方：
+
+- **5.7 提交对话框处理重写**：`dialog-accept` 对 Vue Element UI 弹窗无效，改为已验证的 `run-code` + 键盘 `Enter` + JS `dispatchEvent` 组合方案
+- 新增 Q16-Q20（替换旧 Q16-Q18）：`getByText('去提升 →')` 匹配失败、`--raw eval` viewport float 无害 bug、结果页 URL undefined 参数 bug、session 关闭后 state-load 必需、Vue 弹窗 dialog-accept 无效
+- **移除所有 MCP 残留引用**：工具优先级表、CLI vs MCP 对比文本、"替代 browser_evaluate" 等旧命名全部清理
+- **登录流程明确**：新增 session 重启后 `state-load` 步骤说明
+- 实测验证：CLI `click getByText` 单选可靠（6/6 题生效），`run-code` + `page.mouse.click` 多选可靠，`snapshot` + ref 快速定位有效
+- 发现 Playwright 1.61 的 screencast viewport float 问题（`--raw eval` 时报错但功能正常）
+
+## v12 (2026-06-17) — CLI 迁移
+
+- **全面迁移 Playwright MCP → CLI**（`@playwright/cli`）：所有 `browser_*` 命令替换为 `playwright-cli` 等价命令
+- 新增 Session 与 Dashboard 管理（5.2）：`playwright-cli show` 实时监控 + 点击接管/按 Escape 释放
+- 新增人工介入模式（5.3）：验证码、页面异常、AI 卡住等场景在 Dashboard 中直接操作，无需终端交互
+- 工具优先级表重写（5.1）：`--raw eval` + `click` 为最高优先，快照改为按需磁盘读取
+- 多选处理迁移至 `run-code`（5.6），语法完全兼容原 `browser_run_code_unsafe` 脚本
+- 新增 CLI 命令速查表（第八章）
+- 新增 Q16-Q18：CLI 常见问题（忘记 `--headed`、Dashboard 连接、PowerShell 引号）
+- Token 估算更新：每知识点约 12K（vs MCP 约 33K，节省 64%）
+- 上下文管理建议从每 3 个知识点重置提升至 8-12 个
+- README 同步更新：CLI 安装命令、费用估算、缓存文件路径
+
 ## v11 (2026-05-23)
 
 - Q&A 精简：25→15 条，删除 8 条重复（Q1/Q9/Q11/Q16/Q17/Q20/Q22/Q24），合并 5 条（Q3+Q17→Q2, Q5+Q12+Q13→Q4）

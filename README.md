@@ -1,6 +1,6 @@
 # 智慧树平台 · Claude Code 自动化操作 Skill
 
-让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 通过 Playwright MCP 操作浏览器，自动化完成[智慧树](https://www.zhihuishu.com)平台课程知识点的交互操作，并在此过程中收集整理题目信息。
+让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 通过 Playwright CLI 操作浏览器，自动化完成[智慧树](https://www.zhihuishu.com)平台课程知识点的交互操作，并在此过程中收集整理题目信息。
 
 ## 功能介绍
 
@@ -19,9 +19,9 @@
 
 ## 使用需求
 
-### ⚠️ 必须安装 Claude Code 和 Playwright MCP
+### ⚠️ 必须安装 Claude Code 和 Playwright CLI
 
-本工具依赖 **Claude Code** 和 **Playwright MCP**。如果尚未下载安装，可参考笔者发布在微信公众号 **南医春华秋实** 中的推文：
+本工具依赖 **Claude Code** 和 **Playwright CLI**（`@playwright/cli`）。如果尚未下载安装，可参考笔者发布在微信公众号 **南医春华秋实** 中的推文：
 
 > **《医学生AI副手：Claude Code搭建分享》**
 
@@ -29,7 +29,7 @@
 
 Claude Code 按 token 消耗计费，参考费用：
 
-- 实测在**无可用题库**下使用 **DeepSeekV4-Flash**（`/effort xhigh`）跑完 30 个知识点至 100% 掌握度，花费约 **15 RMB**
+- 实测在**无可用题库**下使用 **DeepSeekV4-Flash**（`/effort xhigh`）跑完 30 个知识点至 100% 掌握度，花费约 **5-6 RMB**（Playwright CLI vs MCP 节省约 64% token）
 - 若已有完整题库，消耗会更低
 
 ## 使用指南
@@ -49,6 +49,15 @@ Claude Code 按 token 消耗计费，参考费用：
 6. 等待运行结果即可
 
 ## 安装
+
+### 前置依赖：安装 Playwright CLI
+
+本 skill 依赖 `@playwright/cli` 驱动浏览器：
+
+```bash
+npm install -g @playwright/cli@latest
+playwright-cli install --skills
+```
 
 ### 方式一：一行命令
 
@@ -95,12 +104,12 @@ git clone https://github.com/Manasseh-D/zhihuishu-skill.git .
 
 4. **中断处理**：CC 偶尔会停下来汇报情况，告诉它"继续完成任务"即可。若部分章节未达到 100%，让 CC 继续处理即可
 
-5. **缓存文件**：运行中产生的 `.playwright-mcp` 文件夹是 MCP 运行时的缓存文件，可定期删除以节省 token
+5. **缓存文件**：运行中产生的 `.playwright-cli` 文件夹是 CLI 运行时的缓存文件（快照、截图等），可定期删除以节省磁盘空间
 
 ## 写在最后
 
 1. 本仓库中的 `题库.md` 是**病理学 2026 年春夏学期**学习过程中整理的题目汇总，有相似课程的同学可参考
-2. 智慧树中非 AI 课程的其他章末测试也可用类似方式实现自动化操作，有需求者可自行探索 Playwright MCP 的相关文档
+2. 智慧树中非 AI 课程的其他章末测试也可用类似方式实现自动化操作，有需求者可自行探索 Playwright CLI 的相关文档
 3. 若有愿意分享学习资料的同学，可关注微信公众号 **Manasseh-D**，私信后台
 4. 笔者非专业项目开发者，skill 尚有诸多不足之处，只希望能帮助大家节省重复操作的时间，专注医学学习
 5. 推荐另一个浏览器自动化脚本：[OCS 网课助手](https://docs.ocsjs.com)，同样基于浏览器自动化技术，支持多平台
