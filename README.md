@@ -45,6 +45,3 @@ claude --dangerously-skip-permissions
 | `progress.md` | 进度追踪（自动更新） |
 | `storage-state.json` | 登录态（gitignore，含 cookie） |
 
-## 费用参考
-
-实测 DeepSeek-V4-Flash 跑完 30 个知识点约 **¥2-3**。脚本覆盖越完整、题库越丰富，费用越低。
